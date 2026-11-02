@@ -237,7 +237,7 @@
 					if (navigator.vibrate) {
 						navigator.vibrate(100)
 					}
-					processBarcode(barcodes[0])
+					processBarcode(barcodes[0].rawValue, barcodes[0].format)
 					return
 				}
 			} catch (err) {
@@ -246,20 +246,21 @@
 			scanTimer = setTimeout(scanFrame, 150)
 		}
 
-		function processBarcode(barcode) {
+		function processBarcode(value, format) {
 			const empty = log.querySelector('.empty')
 			if (empty) {
 				empty.remove()
 			}
 
 			const item = document.createElement('li')
-			const value = document.createElement('strong')
-			value.textContent = barcode.rawValue
+			const valueText = document.createElement('strong')
+			valueText.textContent = value
 			const meta = document.createElement('span')
 			meta.className = 'meta'
-			meta.textContent = `${barcode.format} · ${new Date().toLocaleTimeString()}`
+			format = format || 'Unknown'
+		 	meta.textContent = `${format} · ${new Date().toLocaleTimeString()}`
 
-			item.append(value, meta)
+			item.append(valueText, meta)
 			log.prepend(item)
 		}
 

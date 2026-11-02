@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<title>Barcode Scanner Demo</title>
+	<style>
+		* { box-sizing: border-box; }
+
+		body {
+			margin: 0;
+			font-family: system-ui, -apple-system, Roboto, sans-serif;
+			background: #f4f5f7;
+			color: #1d1f23;
+		}
+
+		header {
+			padding: 16px;
+			background: #1d4ed8;
+			color: #fff;
+		}
+
+		header h1 {
+			margin: 0;
+			font-size: 1.2rem;
+		}
+
+		main {
+			padding: 16px;
+			padding-bottom: 120px; /* room for the floating button */
+		}
+
+		#support-warning {
+			display: none;
+			padding: 12px;
+			margin-bottom: 16px;
+			border-radius: 8px;
+			background: #fee2e2;
+			color: #991b1b;
+		}
+
+		#log {
+			list-style: none;
+			margin: 0;
+			padding: 0;
+		}
+
+		#log li {
+			padding: 12px;
+			margin-bottom: 8px;
+			border-radius: 8px;
+			background: #fff;
+			box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+			word-break: break-all;
+		}
+
+		#log .meta {
+			display: block;
+			font-size: 0.8rem;
+			color: #6b7280;
+			margin-top: 4px;
+		}
+
+		#log .empty {
+			color: #6b7280;
+			background: transparent;
+			box-shadow: none;
+		}
+
+		/* Floating scan button */
+		#scan-button {
+			position: fixed;
+			left: 50%;
+			bottom: calc(24px + env(safe-area-inset-bottom));
+			transform: translateX(-50%);
+			width: 72px;
+			height: 72px;
+			border: none;
+			border-radius: 50%;
+			background: #1d4ed8;
+			color: #fff;
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			cursor: pointer;
+		}
+
+		#scan-button:active {
+			background: #1e40af;
+		}
+
+		#scan-button svg {
+			width: 32px;
+			height: 32px;
+		}
+
+		/* Full screen camera overlay */
+		#scanner {
+			position: fixed;
+			inset: 0;
+			display: none;
+			background: #000;
+			z-index: 10;
+		}
+
+		#scanner.open {
+			display: block;
+		}
+
+		#scanner video {
+			width: 100%;
+			height: 100%;
+			object-fit: cover;
+		}
+
+		#scanner .target {
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			width: 75%;
+			height: 30%;
+			transform: translate(-50%, -50%);
+			border: 3px solid rgba(255, 255, 255, 0.85);
+			border-radius: 12px;
+			box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
+		}
+
+		#close-button {
+			position: absolute;
+			left: 50%;
+			bottom: calc(24px + env(safe-area-inset-bottom));
+			transform: translateX(-50%);
+			padding: 14px 28px;
+			border: none;
+			border-radius: 999px;
+			background: rgba(255, 255, 255, 0.9);
+			color: #1d1f23;
+			font-size: 1rem;
+			font-weight: 600;
+		}
+	</style>
+</head>
+<body>
+	<header>
+		<h1>Barcode Scanner Demo</h1>
+	</header>
+
+	<main>
+		<div id="support-warning"></div>
+		<ul id="log">
+			<li class="empty">No scans yet. Tap the button below to scan a barcode.</li>
+		</ul>
+	</main>
+
+	<button id="scan-button" aria-label="Scan barcode">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+			<path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+			<path d="M7 8v8M10 8v8M13 8v8M17 8v8" />
+		</svg>
+	</button>
+
+	<div id="scanner">
+		<video id="video" playsinline muted></video>
+		<div class="target"></div>
+		<button id="close-button">Cancel</button>
+	</div>
+
+	<script>
+		const scanButton = document.getElementById('scan-button')
+		const closeButton = document.getElementById('close-button')
+		const scanner = document.getElementById('scanner')
+		const video = document.getElementById('video')
+		const log = document.getElementById('log')
+		const supportWarning = document.getElementById('support-warning')
+
+		let detector = null
+		let stream = null
+		let scanTimer = null
+
+		function showWarning(message) {
+			supportWarning.textContent = message
+			supportWarning.style.display = 'block'
+		}
+
+		async function initDetector() {
+			if (!('BarcodeDetector' in window)) {
+				showWarning('The Barcode Detection API is not supported in this browser. Use Chrome on Android.')
+				scanButton.disabled = true
+				return
+			}
+			if (!window.isSecureContext) {
+				showWarning('Camera access requires HTTPS (or localhost).')
+			}
+			const formats = await BarcodeDetector.getSupportedFormats()
+			detector = new BarcodeDetector({ formats })
+		}
+
+		async function openScanner() {
+			if (!detector) {
+				return
+			}
+			try {
+				stream = await navigator.mediaDevices.getUserMedia({
+					video: { facingMode: { ideal: 'environment' } },
+					audio: false,
+				})
+			} catch (err) {
+				showWarning(`Could not open camera: ${err.message}`)
+				return
+			}
+			video.srcObject = stream
+			scanner.classList.add('open')
+			await video.play()
+			scanFrame()
+		}
+
+		function closeScanner() {
+			clearTimeout(scanTimer)
+			scanTimer = null
+			if (stream) {
+				stream.getTracks().forEach(track => track.stop())
+				stream = null
+			}
+			video.srcObject = null
+			scanner.classList.remove('open')
+		}
+
+		async function scanFrame() {
+			if (!stream) {
+				return
+			}
+			try {
+				const barcodes = await detector.detect(video)
+				if (barcodes.length > 0) {
+					closeScanner()
+					if (navigator.vibrate) {
+						navigator.vibrate(100)
+					}
+					processBarcode(barcodes[0])
+					return
+				}
+			} catch (err) {
+				// Frames can fail to decode while the video is warming up; keep trying
+			}
+			scanTimer = setTimeout(scanFrame, 150)
+		}
+
+		function processBarcode(barcode) {
+			const empty = log.querySelector('.empty')
+			if (empty) {
+				empty.remove()
+			}
+
+			const item = document.createElement('li')
+			const value = document.createElement('strong')
+			value.textContent = barcode.rawValue
+			const meta = document.createElement('span')
+			meta.className = 'meta'
+			meta.textContent = `${barcode.format} · ${new Date().toLocaleTimeString()}`
+
+			item.append(value, meta)
+			log.prepend(item)
+		}
+
+		scanButton.addEventListener('click', openScanner)
+		closeButton.addEventListener('click', closeScanner)
+		document.addEventListener('visibilitychange', () => {
+			if (document.hidden) {
+				closeScanner()
+			}
+		})
+
+		initDetector()
+	</script>
+</body>
+</html>

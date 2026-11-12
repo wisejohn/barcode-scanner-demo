@@ -191,6 +191,10 @@
 				<input id="required-matches" type="number" min="1" max="10" value="3" inputmode="numeric">
 			</label>
 			<label>
+				<input id="consecutive" type="checkbox" checked>
+				Consecutive only
+			</label>
+			<label>
 				Delay (ms)
 				<input id="frame-delay" type="number" min="0" max="1000" step="10" value="100" inputmode="numeric">
 			</label>
@@ -227,6 +231,7 @@
 		const requiredMatchesInput = document.getElementById('required-matches')
 		const highResInput = document.getElementById('high-res')
 		const frameDelayInput = document.getElementById('frame-delay')
+		const consecutiveInput = document.getElementById('consecutive')
 
 		const WANTED_FORMATS = ['code_39', 'code_128', 'qr_code', 'ean_13', 'upc_a']
 
@@ -235,16 +240,18 @@
 		let scanTimer = null
 		let lastValue = null
 		let matchCount = 0
+		// Total reads per value this scan, used by first-to-count mode
+		let valueCounts = new Map()
 		// Per-scan debug counters
 		let scanStart = 0
 		let frameCount = 0
 		let readCount = 0
-		let valuesSeen = new Set()
 		let detectMsTotal = 0
 
 		// Code 39 has no checksum, so a single read can be wrong. Only accept a Code 39
-		// value once it has been read this many times in a row. Read on every frame so
-		// changes take effect immediately.
+		// value once it has been read this many times, either in a row (consecutive mode)
+		// or in total (first-to-count mode). Read on every frame so changes take effect
+		// immediately.
 		function getRequiredMatches() {
 			const value = parseInt(requiredMatchesInput.value, 10)
 			return Number.isFinite(value) && value > 0 ? value : 1
@@ -265,6 +272,9 @@
 					if (saved.frameDelay !== undefined) {
 						frameDelayInput.value = saved.frameDelay
 					}
+					if (saved.consecutive !== undefined) {
+						consecutiveInput.checked = saved.consecutive
+					}
 				}
 			} catch (err) {
 				// Storage can be unavailable; fall back to the defaults in the markup
@@ -277,6 +287,7 @@
 					requiredMatches: getRequiredMatches(),
 					highRes: highResInput.checked,
 					frameDelay: getFrameDelay(),
+					consecutive: consecutiveInput.checked,
 				}))
 			} catch (err) {
 				// Ignore storage failures
@@ -330,7 +341,7 @@
 			matchCount = 0
 			frameCount = 0
 			readCount = 0
-			valuesSeen = new Set()
+			valueCounts = new Map()
 			detectMsTotal = 0
 			video.srcObject = stream
 			scanner.classList.add('open')
@@ -362,20 +373,23 @@
 				if (barcodes.length > 0) {
 					const { rawValue, format } = barcodes[0]
 					readCount++
-					valuesSeen.add(rawValue)
+					const totalCount = (valueCounts.get(rawValue) || 0) + 1
+					valueCounts.set(rawValue, totalCount)
 					if (rawValue === lastValue) {
 						matchCount++
 					} else {
 						lastValue = rawValue
 						matchCount = 1
 					}
+					const consecutive = consecutiveInput.checked
 					const requiredMatches = format === 'code_39' ? getRequiredMatches() : 1
-					if (matchCount >= requiredMatches) {
+					if ((consecutive ? matchCount : totalCount) >= requiredMatches) {
 						const debug = {
 							reads: readCount,
 							frames: frameCount,
 							requiredMatches,
-							distinctValues: valuesSeen.size,
+							mode: consecutive ? 'in a row' : 'total',
+							distinctValues: valueCounts.size,
 							elapsedMs: Math.round(performance.now() - scanStart),
 							delayMs: getFrameDelay(),
 							avgDetectMs: Math.round(detectMsTotal / frameCount),
@@ -414,7 +428,7 @@
 			if (debug) {
 				const debugText = document.createElement('span')
 				debugText.className = 'debug'
-				debugText.textContent = `${debug.reads} reads (needed ${debug.requiredMatches} in a row) · `
+				debugText.textContent = `${debug.reads} reads (needed ${debug.requiredMatches} ${debug.mode}) · `
 					+ `${debug.distinctValues} distinct · ${debug.frames} frames · `
 					+ `${debug.elapsedMs} ms · ${debug.delayMs} ms delay · `
 					+ `${debug.avgDetectMs} ms avg detect · ${debug.resolution}`
@@ -428,6 +442,7 @@
 		requiredMatchesInput.addEventListener('input', saveSettings)
 		highResInput.addEventListener('change', saveSettings)
 		frameDelayInput.addEventListener('input', saveSettings)
+		consecutiveInput.addEventListener('change', saveSettings)
 		scanButton.addEventListener('click', openScanner)
 		closeButton.addEventListener('click', closeScanner)
 		document.addEventListener('visibilitychange', () => {

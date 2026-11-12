@@ -39,6 +39,43 @@
 			color: #991b1b;
 		}
 
+		#settings {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 12px 24px;
+			align-items: center;
+			padding: 12px;
+			margin-bottom: 16px;
+			border-radius: 8px;
+			background: #fff;
+			box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+		}
+
+		#settings label {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		#settings input[type="number"] {
+			width: 64px;
+			padding: 6px;
+			font-size: 1rem;
+		}
+
+		#settings input[type="checkbox"] {
+			width: 20px;
+			height: 20px;
+		}
+
+		#log .debug {
+			display: block;
+			font-size: 0.75rem;
+			font-family: ui-monospace, monospace;
+			color: #6b7280;
+			margin-top: 4px;
+		}
+
 		#log {
 			list-style: none;
 			margin: 0;
@@ -148,6 +185,16 @@
 
 	<main>
 		<div id="support-warning"></div>
+		<div id="settings">
+			<label>
+				Code 39 matches
+				<input id="required-matches" type="number" min="1" max="10" value="3" inputmode="numeric">
+			</label>
+			<label>
+				<input id="high-res" type="checkbox" checked>
+				High resolution
+			</label>
+		</div>
 		<ul id="log">
 			<li class="empty">No scans yet. Tap the button below to scan a barcode.</li>
 		</ul>
@@ -173,10 +220,9 @@
 		const video = document.getElementById('video')
 		const log = document.getElementById('log')
 		const supportWarning = document.getElementById('support-warning')
+		const requiredMatchesInput = document.getElementById('required-matches')
+		const highResInput = document.getElementById('high-res')
 
-		// Code 39 has no checksum, so a single read can be wrong. Only accept a value
-		// once it has been read this many times in a row.
-		const REQUIRED_MATCHES = 3
 		const WANTED_FORMATS = ['code_39', 'code_128', 'qr_code', 'ean_13', 'upc_a']
 
 		let detector = null
@@ -184,6 +230,42 @@
 		let scanTimer = null
 		let lastValue = null
 		let matchCount = 0
+		// Per-scan debug counters
+		let scanStart = 0
+		let frameCount = 0
+		let readCount = 0
+		let valuesSeen = new Set()
+
+		// Code 39 has no checksum, so a single read can be wrong. Only accept a Code 39
+		// value once it has been read this many times in a row. Read on every frame so
+		// changes take effect immediately.
+		function getRequiredMatches() {
+			const value = parseInt(requiredMatchesInput.value, 10)
+			return Number.isFinite(value) && value > 0 ? value : 1
+		}
+
+		function loadSettings() {
+			try {
+				const saved = JSON.parse(localStorage.getItem('scannerSettings'))
+				if (saved) {
+					requiredMatchesInput.value = saved.requiredMatches
+					highResInput.checked = saved.highRes
+				}
+			} catch (err) {
+				// Storage can be unavailable; fall back to the defaults in the markup
+			}
+		}
+
+		function saveSettings() {
+			try {
+				localStorage.setItem('scannerSettings', JSON.stringify({
+					requiredMatches: getRequiredMatches(),
+					highRes: highResInput.checked,
+				}))
+			} catch (err) {
+				// Ignore storage failures
+			}
+		}
 
 		function showWarning(message) {
 			supportWarning.textContent = message
@@ -208,14 +290,15 @@
 			if (!detector) {
 				return
 			}
+			const videoConstraints = { facingMode: { ideal: 'environment' } }
+			if (highResInput.checked) {
+				// Chrome defaults to 640x480, which is too low for thin Code 39 bars
+				videoConstraints.width = { ideal: 1920 }
+				videoConstraints.height = { ideal: 1080 }
+			}
 			try {
 				stream = await navigator.mediaDevices.getUserMedia({
-					video: {
-						facingMode: { ideal: 'environment' },
-						// Chrome defaults to 640x480, which is too low for thin Code 39 bars
-						width: { ideal: 1920 },
-						height: { ideal: 1080 },
-					},
+					video: videoConstraints,
 					audio: false,
 				})
 			} catch (err) {
@@ -229,9 +312,13 @@
 			}
 			lastValue = null
 			matchCount = 0
+			frameCount = 0
+			readCount = 0
+			valuesSeen = new Set()
 			video.srcObject = stream
 			scanner.classList.add('open')
 			await video.play()
+			scanStart = performance.now()
 			scanFrame()
 		}
 
@@ -251,21 +338,33 @@
 				return
 			}
 			try {
+				frameCount++
 				const barcodes = await detector.detect(video)
 				if (barcodes.length > 0) {
 					const { rawValue, format } = barcodes[0]
+					readCount++
+					valuesSeen.add(rawValue)
 					if (rawValue === lastValue) {
 						matchCount++
 					} else {
 						lastValue = rawValue
 						matchCount = 1
 					}
-					if (matchCount >= REQUIRED_MATCHES) {
+					const requiredMatches = format === 'code_39' ? getRequiredMatches() : 1
+					if (matchCount >= requiredMatches) {
+						const debug = {
+							reads: readCount,
+							frames: frameCount,
+							requiredMatches,
+							distinctValues: valuesSeen.size,
+							elapsedMs: Math.round(performance.now() - scanStart),
+							resolution: `${video.videoWidth}x${video.videoHeight}`,
+						}
 						closeScanner()
 						if (navigator.vibrate) {
 							navigator.vibrate(100)
 						}
-						processBarcode(rawValue, format)
+						processBarcode(rawValue, format, debug)
 						return
 					}
 				}
@@ -275,7 +374,7 @@
 			scanTimer = setTimeout(scanFrame, 100)
 		}
 
-		function processBarcode(value, format) {
+		function processBarcode(value, format, debug) {
 			const empty = log.querySelector('.empty')
 			if (empty) {
 				empty.remove()
@@ -290,9 +389,22 @@
 		 	meta.textContent = `${format} · ${new Date().toLocaleTimeString()}`
 
 			item.append(valueText, meta)
+
+			if (debug) {
+				const debugText = document.createElement('span')
+				debugText.className = 'debug'
+				debugText.textContent = `${debug.reads} reads (needed ${debug.requiredMatches} in a row) · `
+					+ `${debug.distinctValues} distinct · ${debug.frames} frames · `
+					+ `${debug.elapsedMs} ms · ${debug.resolution}`
+				item.append(debugText)
+			}
+
 			log.prepend(item)
 		}
 
+		loadSettings()
+		requiredMatchesInput.addEventListener('input', saveSettings)
+		highResInput.addEventListener('change', saveSettings)
 		scanButton.addEventListener('click', openScanner)
 		closeButton.addEventListener('click', closeScanner)
 		document.addEventListener('visibilitychange', () => {

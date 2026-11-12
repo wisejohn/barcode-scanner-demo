@@ -191,6 +191,10 @@
 				<input id="required-matches" type="number" min="1" max="10" value="3" inputmode="numeric">
 			</label>
 			<label>
+				Delay (ms)
+				<input id="frame-delay" type="number" min="0" max="1000" step="10" value="100" inputmode="numeric">
+			</label>
+			<label>
 				<input id="high-res" type="checkbox" checked>
 				High resolution
 			</label>
@@ -222,6 +226,7 @@
 		const supportWarning = document.getElementById('support-warning')
 		const requiredMatchesInput = document.getElementById('required-matches')
 		const highResInput = document.getElementById('high-res')
+		const frameDelayInput = document.getElementById('frame-delay')
 
 		const WANTED_FORMATS = ['code_39', 'code_128', 'qr_code', 'ean_13', 'upc_a']
 
@@ -235,6 +240,7 @@
 		let frameCount = 0
 		let readCount = 0
 		let valuesSeen = new Set()
+		let detectMsTotal = 0
 
 		// Code 39 has no checksum, so a single read can be wrong. Only accept a Code 39
 		// value once it has been read this many times in a row. Read on every frame so
@@ -244,12 +250,21 @@
 			return Number.isFinite(value) && value > 0 ? value : 1
 		}
 
+		// Pause between the end of one detect() call and the start of the next
+		function getFrameDelay() {
+			const value = parseInt(frameDelayInput.value, 10)
+			return Number.isFinite(value) && value >= 0 ? value : 0
+		}
+
 		function loadSettings() {
 			try {
 				const saved = JSON.parse(localStorage.getItem('scannerSettings'))
 				if (saved) {
 					requiredMatchesInput.value = saved.requiredMatches
 					highResInput.checked = saved.highRes
+					if (saved.frameDelay !== undefined) {
+						frameDelayInput.value = saved.frameDelay
+					}
 				}
 			} catch (err) {
 				// Storage can be unavailable; fall back to the defaults in the markup
@@ -261,6 +276,7 @@
 				localStorage.setItem('scannerSettings', JSON.stringify({
 					requiredMatches: getRequiredMatches(),
 					highRes: highResInput.checked,
+					frameDelay: getFrameDelay(),
 				}))
 			} catch (err) {
 				// Ignore storage failures
@@ -315,6 +331,7 @@
 			frameCount = 0
 			readCount = 0
 			valuesSeen = new Set()
+			detectMsTotal = 0
 			video.srcObject = stream
 			scanner.classList.add('open')
 			await video.play()
@@ -339,7 +356,9 @@
 			}
 			try {
 				frameCount++
+				const detectStart = performance.now()
 				const barcodes = await detector.detect(video)
+				detectMsTotal += performance.now() - detectStart
 				if (barcodes.length > 0) {
 					const { rawValue, format } = barcodes[0]
 					readCount++
@@ -358,6 +377,8 @@
 							requiredMatches,
 							distinctValues: valuesSeen.size,
 							elapsedMs: Math.round(performance.now() - scanStart),
+							delayMs: getFrameDelay(),
+							avgDetectMs: Math.round(detectMsTotal / frameCount),
 							resolution: `${video.videoWidth}x${video.videoHeight}`,
 						}
 						closeScanner()
@@ -371,7 +392,7 @@
 			} catch (err) {
 				// Frames can fail to decode while the video is warming up; keep trying
 			}
-			scanTimer = setTimeout(scanFrame, 100)
+			scanTimer = setTimeout(scanFrame, getFrameDelay())
 		}
 
 		function processBarcode(value, format, debug) {
@@ -395,7 +416,8 @@
 				debugText.className = 'debug'
 				debugText.textContent = `${debug.reads} reads (needed ${debug.requiredMatches} in a row) · `
 					+ `${debug.distinctValues} distinct · ${debug.frames} frames · `
-					+ `${debug.elapsedMs} ms · ${debug.resolution}`
+					+ `${debug.elapsedMs} ms · ${debug.delayMs} ms delay · `
+					+ `${debug.avgDetectMs} ms avg detect · ${debug.resolution}`
 				item.append(debugText)
 			}
 
@@ -405,6 +427,7 @@
 		loadSettings()
 		requiredMatchesInput.addEventListener('input', saveSettings)
 		highResInput.addEventListener('change', saveSettings)
+		frameDelayInput.addEventListener('input', saveSettings)
 		scanButton.addEventListener('click', openScanner)
 		closeButton.addEventListener('click', closeScanner)
 		document.addEventListener('visibilitychange', () => {

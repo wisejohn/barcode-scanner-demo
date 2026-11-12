@@ -174,9 +174,16 @@
 		const log = document.getElementById('log')
 		const supportWarning = document.getElementById('support-warning')
 
+		// Code 39 has no checksum, so a single read can be wrong. Only accept a value
+		// once it has been read this many times in a row.
+		const REQUIRED_MATCHES = 3
+		const WANTED_FORMATS = ['code_39', 'code_128', 'qr_code', 'ean_13', 'upc_a']
+
 		let detector = null
 		let stream = null
 		let scanTimer = null
+		let lastValue = null
+		let matchCount = 0
 
 		function showWarning(message) {
 			supportWarning.textContent = message
@@ -192,7 +199,8 @@
 			if (!window.isSecureContext) {
 				showWarning('Camera access requires HTTPS (or localhost).')
 			}
-			const formats = await BarcodeDetector.getSupportedFormats()
+			const supported = await BarcodeDetector.getSupportedFormats()
+			const formats = WANTED_FORMATS.filter(format => supported.includes(format))
 			detector = new BarcodeDetector({ formats })
 		}
 
@@ -202,13 +210,25 @@
 			}
 			try {
 				stream = await navigator.mediaDevices.getUserMedia({
-					video: { facingMode: { ideal: 'environment' } },
+					video: {
+						facingMode: { ideal: 'environment' },
+						// Chrome defaults to 640x480, which is too low for thin Code 39 bars
+						width: { ideal: 1920 },
+						height: { ideal: 1080 },
+					},
 					audio: false,
 				})
 			} catch (err) {
 				showWarning(`Could not open camera: ${err.message}`)
 				return
 			}
+			try {
+				await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ focusMode: 'continuous' }] })
+			} catch (err) {
+				// Not every camera supports focus control
+			}
+			lastValue = null
+			matchCount = 0
 			video.srcObject = stream
 			scanner.classList.add('open')
 			await video.play()
@@ -233,17 +253,26 @@
 			try {
 				const barcodes = await detector.detect(video)
 				if (barcodes.length > 0) {
-					closeScanner()
-					if (navigator.vibrate) {
-						navigator.vibrate(100)
+					const { rawValue, format } = barcodes[0]
+					if (rawValue === lastValue) {
+						matchCount++
+					} else {
+						lastValue = rawValue
+						matchCount = 1
 					}
-					processBarcode(barcodes[0].rawValue, barcodes[0].format)
-					return
+					if (matchCount >= REQUIRED_MATCHES) {
+						closeScanner()
+						if (navigator.vibrate) {
+							navigator.vibrate(100)
+						}
+						processBarcode(rawValue, format)
+						return
+					}
 				}
 			} catch (err) {
 				// Frames can fail to decode while the video is warming up; keep trying
 			}
-			scanTimer = setTimeout(scanFrame, 150)
+			scanTimer = setTimeout(scanFrame, 100)
 		}
 
 		function processBarcode(value, format) {
